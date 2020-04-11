@@ -139,7 +139,7 @@ class Residue:
 		atom_class = atom_traits['class']
 		element = atom_traits['element']
 		mass = float(atom_traits['mass'])
-		return Atom(name, element, atom_class, type_id, mass)
+		return Atom(name, element, atom_class, type_id, mass, pos=len(self.atoms))
 
 	def _get_bond(self, xml_element):
 		# extract the indices of two bonded atoms from the forcefield
@@ -174,6 +174,9 @@ class Residue:
 		else:
 			ks = 1
 		return sum([force() for force in self.get_forces()]) / ks
+
+	def get_mass(self):
+		return sum([atom.mass for atom in self.atoms])
 
 	def __repr__(self):
 		return f'Residue({self.name}: {self.get_atom_count()} atoms, {self.get_bond_count()} bonds)'
@@ -235,6 +238,9 @@ class Chain:
 
 	def get_variables(self):
 		return sum([res.get_variables() for res in self.residues], [])
+
+	def get_mass(self):
+		return sum([res.get_mass() for res in self.residues])
 
 	def __repr__(self):
 		return f'Chain({len(self.residues)} residues, {self.get_atom_count()} atoms, {self.get_bond_count()} bonds)'
