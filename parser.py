@@ -1,5 +1,6 @@
 import xml.etree.ElementTree as ElementTree
 import tensorflow as tf
+import numpy as np
 
 class HarmonicBondForce:
 	def __init__(self, atom1, atom2, length, k):
@@ -23,7 +24,10 @@ class HarmonicAngleForce:
 		self.atom1 = atom1
 		self.atom2 = atom2
 		self.atom3 = atom3
-		self.angle = tf.constant(angle)
+		# use angle - pi as the actual target angle such that angle=0 is straight and angle=pi is right angle
+		self.angle = tf.constant(angle) - np.pi
+		self.angle *= np.sign(self.angle)
+
 		self.k = tf.constant(k)
 
 	def __call__(self):
@@ -34,6 +38,11 @@ class HarmonicAngleForce:
 		side1 = pos1 - pos2
 		side2 = pos3 - pos2
 		cosine_angle = tf.tensordot(side1, side2, 1) / (tf.norm(side1) * tf.norm(side2))
+
+		if cosine_angle >= 1:
+			# acos(x) is not defined for x>1 and gradient is -inf for x=1 (returning 0 here destroys the gradient for this force)
+			return tf.constant(0, dtype=tf.float32)
+
 		ang = tf.math.acos(cosine_angle)
 		return k * (ang - angle) ** 2
 
@@ -121,7 +130,7 @@ class Residue:
 			if force is not None:
 				self.harmonic_bond_forces.append(HarmonicBondForce(a1, a2, float(force.get('length')), float(force.get('k'))))
 			else:
-				print(f'No bond definition found for {a1.name} and {a2.name}')
+				print(f'No harmonic bond force found for {a1.name} and {a2.name}')
 
 		# get the harmonic angle forces between atoms
 		self.harmonic_angle_forces = []
