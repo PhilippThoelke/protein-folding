@@ -5,12 +5,15 @@ class HarmonicBondForce:
 	def __init__(self, atom1, atom2, length, k):
 		self.atom1 = atom1
 		self.atom2 = atom2
-		self.length = length
-		self.k = k
+		self.length = tf.constant(length)
+		self.k = tf.constant(k)
+
+	def __call__(self):
+		return HarmonicBondForce._call(self.atom1.pos, self.atom2.pos, self.length, self.k)
 
 	@tf.function
-	def __call__(self):
-		return self.k * (tf.norm(self.atom2.pos - self.atom1.pos) - self.length) ** 2
+	def _call(pos1, pos2, length, k):
+		return k * (tf.norm(pos1 - pos2) - length) ** 2
 
 	def __repr__(self):
 		return f'HarmonicBondForce(between {self.atom1.name} and {self.atom2.name}, length is {self.length})'
@@ -20,16 +23,19 @@ class HarmonicAngleForce:
 		self.atom1 = atom1
 		self.atom2 = atom2
 		self.atom3 = atom3
-		self.angle = angle
-		self.k = k
+		self.angle = tf.constant(angle)
+		self.k = tf.constant(k)
+
+	def __call__(self):
+		return HarmonicAngleForce._call(self.atom1.pos, self.atom2.pos, self.atom3.pos, self.angle, self.k)
 
 	@tf.function
-	def __call__(self):
-		side1 = self.atom1.pos - self.atom2.pos
-		side2 = self.atom3.pos - self.atom2.pos
+	def _call(pos1, pos2, pos3, angle, k):
+		side1 = pos1 - pos2
+		side2 = pos3 - pos2
 		cosine_angle = tf.tensordot(side1, side2, 1) / (tf.norm(side1) * tf.norm(side2))
 		ang = tf.math.acos(cosine_angle)
-		return self.k * (ang - self.angle) ** 2
+		return k * (ang - angle) ** 2
 
 	def __repr__(self):
 		return f'HarmonicAngleForce(between {self.atom1.name}, {self.atom2.name} and {self.atom3.name}, angle is {self.angle})'
