@@ -35,9 +35,10 @@ class HarmonicAngleForce:
 		return f'HarmonicAngleForce(between {self.atom1.name}, {self.atom2.name} and {self.atom3.name}, angle is {self.angle})'
 
 class Atom:
-	def __init__(self, name, element, type_id, mass, pos=None):
+	def __init__(self, name, element, atom_class, type_id, mass, pos=None):
 		self.name = name
 		self.element = element
+		self.atom_class = atom_class
 		self.type_id = type_id
 		self.mass = mass
 		if pos is None:
@@ -51,7 +52,7 @@ class Atom:
 		return f'Atom({self.name}: element {self.element} with mass {self.mass})'
 
 class Residue:
-	def __init__(self, name, forcefield, add_hydrogens=False, add_oxygen=False, his_replacement='HID'):
+	def __init__(self, name, forcefield='forcefields/amber99sb.xml', add_hydrogens=False, add_oxygen=False, his_replacement='HID'):
 		# parse a mapping from single letter amino acid codes to three letter abbreviations
 		mappings = ('ala:A|arg:R|asn:N|asp:D|cys:C|gln:Q|glu:E|gly:G|his:H|ile:I|'
 				   + 'leu:L|lys:K|met:M|phe:F|pro:P|ser:S|thr:T|trp:W|tyr:Y|val:V').upper().split('|')
@@ -100,33 +101,29 @@ class Residue:
 			else:
 				print(f'Unsupported type {obj.type}')
 
-		self.harmonic_bond_forces = []
 		# get the harmonic bond forces between atoms
+		self.harmonic_bond_forces = []
 		for bond in self.bonds:
 			a1 = bond[0]
 			a2 = bond[1]
-			search_options = [(a1.name, a2.name), (a2.name, a1.name),
-							  (a1.name, a2.element), (a1.element, a2.name),
-							  (a1.element, a2.element), (a2.element, a1.element)]
+			search_options = [(a1.atom_class, a2.atom_class),
+							  (a2.atom_class, a1.atom_class)]
 			for option in search_options:
 				force = self._get_harmonic_bond_force(*option)
 				if force is not None:
 					break
 			if force is not None:
 				self.harmonic_bond_forces.append(HarmonicBondForce(a1, a2, float(force.get('length')), float(force.get('k'))))
+			else:
+				print(f'No bond definition found for {a1.name} and {a2.name}')
 
+		# get the harmonic angle forces between atoms
 		self.harmonic_angle_forces = []
 		for i, a1 in enumerate(self.atoms):
 			for j, a2 in enumerate(self.atoms[i+1:]):
 				for k, a3 in enumerate(self.atoms[i+j+2:]):
-					search_options = [(a1.name, a2.name, a3.name), (a3.name, a2.name, a1.name),
-									  (a1.name, a2.name, a3.element), (a3.element, a2.name, a1.name),
-									  (a1.name, a2.element, a3.name), (a3.name, a2.element, a1.name),
-									  (a1.element, a2.name, a3.name), (a3.name, a2.name, a1.element),
-									  (a1.element, a2.element, a3.name), (a3.name, a2.element, a1.element),
-									  (a1.element, a2.name, a3.element), (a3.element, a2.name, a1.element),
-									  (a1.name, a2.element, a3.element), (a3.element, a2.element, a1.name),
-									  (a1.element, a2.element, a3.element), (a3.element, a2.element, a1.element)]
+					search_options = [(a1.atom_class, a2.atom_class, a3.atom_class),
+									  (a3.atom_class, a2.atom_class, a1.atom_class)]
 					for option in search_options:
 						force = self._get_harmonic_angle_force(*option)
 						if force is not None:
@@ -139,9 +136,10 @@ class Residue:
 		name = xml_element.get('name')
 		type_id = int(xml_element.get('type'))
 		atom_traits = self.forcefield[0][type_id].attrib
+		atom_class = atom_traits['class']
 		element = atom_traits['element']
 		mass = float(atom_traits['mass'])
-		return Atom(name, element, type_id, mass, pos=len(self.atoms))
+		return Atom(name, element, atom_class, type_id, mass)
 
 	def _get_bond(self, xml_element):
 		# extract the indices of two bonded atoms from the forcefield
@@ -169,6 +167,13 @@ class Residue:
 
 	def get_variables(self):
 		return [atom.pos for atom in self.atoms]
+
+	def get_energy(self, normalize=False):
+		if normalize:
+			ks = sum([force.k for force in self.get_forces()])
+		else:
+			ks = 1
+		return sum([force() for force in self.get_forces()]) / ks
 
 	def __repr__(self):
 		return f'Residue({self.name}: {self.get_atom_count()} atoms, {self.get_bond_count()} bonds)'
