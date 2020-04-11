@@ -202,9 +202,8 @@ class Chain:
 		for bond in self.external_bonds:
 			a1 = bond[0]
 			a2 = bond[1]
-			search_options = [(a1.name, a2.name), (a2.name, a1.name),
-							  (a1.name, a2.element), (a1.element, a2.name),
-							  (a1.element, a2.element), (a2.element, a1.element)]
+			search_options = [(a1.atom_class, a2.atom_class),
+							  (a2.atom_class, a1.atom_class)]
 			for option in search_options:
 				force = self.residues[0]._get_harmonic_bond_force(*option)
 				if force is not None:
