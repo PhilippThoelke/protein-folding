@@ -2,12 +2,19 @@ import xml.etree.ElementTree as ElementTree
 import tensorflow as tf
 import numpy as np
 
-class HarmonicBondForce:
+class Force:
+	def get_weighting(self):
+		return 1
+
+class HarmonicBondForce(Force):
 	def __init__(self, atom1, atom2, length, k):
 		self.atom1 = atom1
 		self.atom2 = atom2
 		self.length = tf.constant(length)
 		self.k = tf.constant(k)
+
+	def get_weighting(self):
+		return self.k
 
 	def __call__(self):
 		return HarmonicBondForce._call(self.atom1.pos, self.atom2.pos, self.length, self.k)
@@ -19,7 +26,7 @@ class HarmonicBondForce:
 	def __repr__(self):
 		return f'HarmonicBondForce(between {self.atom1.name} and {self.atom2.name}, length is {self.length})'
 
-class HarmonicAngleForce:
+class HarmonicAngleForce(Force):
 	def __init__(self, atom1, atom2, atom3, angle, k):
 		self.atom1 = atom1
 		self.atom2 = atom2
@@ -29,6 +36,9 @@ class HarmonicAngleForce:
 		self.angle *= np.sign(self.angle)
 
 		self.k = tf.constant(k)
+
+	def get_weighting(self):
+		return self.k
 
 	def __call__(self):
 		return HarmonicAngleForce._call(self.atom1.pos, self.atom2.pos, self.atom3.pos, self.angle, self.k)
@@ -49,13 +59,38 @@ class HarmonicAngleForce:
 	def __repr__(self):
 		return f'HarmonicAngleForce(between {self.atom1.name}, {self.atom2.name} and {self.atom3.name}, angle is {self.angle})'
 
+class LennardJonesForce(Force):
+	def __init__(self, atom1, atom2):
+		self.atom1 = atom1
+		self.atom2 = atom2
+		self.epsilon = tf.constant(4 * tf.math.sqrt(self.atom1.epsilon * self.atom2.epsilon), dtype=tf.float32)
+		sigma = (self.atom1.sigma + self.atom2.sigma) / 2
+		self.sigma6 = tf.constant(sigma ** 6, dtype=tf.float32)
+		self.sigma12 = tf.constant(sigma ** 12, dtype=tf.float32)
+
+	def get_weighting(self):
+		return self.epsilon
+
+	def __call__(self):
+		return LennardJonesForce._call(self.atom1.pos, self.atom2.pos, self.epsilon, self.sigma6, self.sigma12)
+
+	@tf.function
+	def _call(pos1, pos2, epsilon, sigma6, sigma12):
+		# calculation of r should not just use the positions but also the contact radii
+		r_sq = tf.reduce_sum((pos2 - pos1) ** 2)
+		return epsilon * (sigma12 / r_sq ** 6 - sigma6 / r_sq ** 3)
+
 class Atom:
-	def __init__(self, name, element, atom_class, type_id, mass, pos=None):
+	def __init__(self, name, element, atom_class, type_id, mass, charge, sigma, epsilon, pos=None):
 		self.name = name
 		self.element = element
 		self.atom_class = atom_class
 		self.type_id = type_id
 		self.mass = mass
+		self.charge = charge
+		self.sigma = sigma
+		self.epsilon = epsilon
+
 		if pos is None:
 			self.pos = tf.Variable(tf.random.uniform(shape=(3,)))
 		elif type(pos) == float or type(pos) == int:
@@ -67,7 +102,7 @@ class Atom:
 		return f'Atom({self.name}: element {self.element} with mass {self.mass})'
 
 class Residue:
-	def __init__(self, name, forcefield='forcefields/amber99sb.xml', add_hydrogens=False, add_oxygen=False, his_replacement='HID'):
+	def __init__(self, name, forcefield='forcefields/amber99sb.xml', add_hydrogens=False, add_oxygen=False, his_replacement='HID', addLJ=True):
 		# parse a mapping from single letter amino acid codes to three letter abbreviations
 		mappings = ('ala:A|arg:R|asn:N|asp:D|cys:C|gln:Q|glu:E|gly:G|his:H|ile:I|'
 				   + 'leu:L|lys:K|met:M|phe:F|pro:P|ser:S|thr:T|trp:W|tyr:Y|val:V').upper().split('|')
@@ -146,15 +181,28 @@ class Residue:
 					if force is not None:
 						self.harmonic_angle_forces.append(HarmonicAngleForce(a1, a2, a3, float(force.get('angle')), float(force.get('k'))))
 
+		# get Lennard-Jones forces for all atoms
+		self.lennard_jones_forces = []
+		if addLJ:
+			for i, a1 in enumerate(self.atoms):
+				for a2 in self.atoms[i+1:]:
+					self.lennard_jones_forces.append(LennardJonesForce(a1, a2))
+
 	def _get_atom(self, xml_element):
 		# extract the attributes of an atom from the forcefield
 		name = xml_element.get('name')
 		type_id = int(xml_element.get('type'))
+
 		atom_traits = self.forcefield[0][type_id].attrib
 		atom_class = atom_traits['class']
 		element = atom_traits['element']
 		mass = float(atom_traits['mass'])
-		return Atom(name, element, atom_class, type_id, mass, pos=len(self.atoms))
+
+		nonbonded_traits = self.forcefield[5][type_id].attrib
+		charge = float(nonbonded_traits.get('charge'))
+		sigma = float(nonbonded_traits.get('sigma'))
+		epsilon = float(nonbonded_traits.get('epsilon'))
+		return Atom(name, element, atom_class, type_id, mass, charge, sigma, epsilon)
 
 	def _get_bond(self, xml_element):
 		# extract the indices of two bonded atoms from the forcefield
@@ -178,17 +226,18 @@ class Residue:
 		return len(self.bonds)
 
 	def get_forces(self):
-		return self.harmonic_bond_forces + self.harmonic_angle_forces
+		return self.harmonic_bond_forces + self.harmonic_angle_forces + self.lennard_jones_forces
 
 	def get_variables(self):
 		return [atom.pos for atom in self.atoms]
 
 	def get_energy(self, normalize=False):
+		forces = self.get_forces()
 		if normalize:
-			ks = sum([force.k for force in self.get_forces()])
+			ks = sum([force.get_weighting() for force in forces])
 		else:
 			ks = 1
-		return sum([force() for force in self.get_forces()]) / ks
+		return sum([force() for force in forces]) / ks
 
 	def get_mass(self):
 		return sum([atom.mass for atom in self.atoms])
@@ -206,7 +255,7 @@ class Chain:
 		self.residues = []
 		# generate residues from the amino acid sequence
 		for i, aa in enumerate(self.sequence):
-			self.residues.append(Residue(aa, forcefield, add_hydrogens=(i == 0), add_oxygen=(i == len(self.sequence) - 1)))
+			self.residues.append(Residue(aa, forcefield, addLJ=False, add_hydrogens=(i == 0), add_oxygen=(i == len(self.sequence) - 1)))
 
 		self.external_bonds = []
 		# store the atoms which have external bonds, reaching from one residue to another
@@ -229,6 +278,13 @@ class Chain:
 			if force is not None:
 				self.external_harmonic_bond_forces.append(HarmonicBondForce(a1, a2, float(force.get('length')), float(force.get('k'))))
 
+		# get Lennard-Jones forces for all pairs of atoms
+		self.lennard_jones_forces = []
+		atoms = self.get_atoms()
+		for i, a1 in enumerate(atoms):
+			for a2 in atoms[i+1:]:
+				self.lennard_jones_forces.append(LennardJonesForce(a1, a2))
+
 	def get_atom_count(self):
 		return sum([res.get_atom_count() for res in self.residues])
 
@@ -242,14 +298,15 @@ class Chain:
 		return sum([res.bonds for res in self.residues], []) + self.external_bonds
 
 	def get_forces(self):
-		return sum([res.get_forces() for res in self.residues], []) + self.external_harmonic_bond_forces
+		return sum([res.get_forces() for res in self.residues], []) + self.external_harmonic_bond_forces + self.lennard_jones_forces
 
 	def get_energy(self, normalize=False):
+		forces = self.get_forces()
 		if normalize:
-			ks = sum([force.k for force in self.get_forces()])
+			ks = sum([force.get_weighting() for force in forces])
 		else:
 			ks = 1
-		return sum([force() for force in self.get_forces()]) / ks
+		return sum([force() for force in forces]) / ks
 
 	def get_variables(self):
 		return sum([res.get_variables() for res in self.residues], [])
