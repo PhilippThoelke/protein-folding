@@ -134,7 +134,7 @@ class Residue:
 
 		# load the forcefield xml and store the root element
 		if type(forcefield) == str:
-			self.forcefield = ElementTree.parse('forcefields/amber99sb.xml').getroot()
+			self.forcefield = ElementTree.parse(forcefield).getroot()
 		elif type(forcefield) == ElementTree.ElementTree:
 			self.forcefield = forcefield.getroot()
 		elif type(forcefield) == ElementTree.Element:
