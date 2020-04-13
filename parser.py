@@ -230,6 +230,9 @@ class Residue:
 	def get_bond_count(self):
 		return len(self.bonds)
 
+	def get_atoms(self):
+		return self.atoms
+
 	def get_forces(self):
 		return self.harmonic_bond_forces + self.harmonic_angle_forces + self.nonbonded_forces
 
